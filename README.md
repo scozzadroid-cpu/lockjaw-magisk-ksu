@@ -103,3 +103,6 @@ usb restricted mode · usb lockdown · usb data block · otg block · usb host �
 bfu · afu · before first unlock · inactivity reboot · auto reboot · lockdown mode ·
 file-based encryption · fbe · CVE-2024-53104 · CVE-2024-53197 · CVE-2024-50302 ·
 privacy · physical access
+
+## License
+[GPL-3.0](LICENSE) © scozzadroid-cpu
