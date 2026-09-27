@@ -1,10 +1,10 @@
 #!/system/bin/sh
-# physical_hardening - service.sh
-# a) USB dati + host/OTG disattivati a schermo bloccato, ripristino allo sblocco
-# b) riavvio se il telefono non viene sbloccato per N ore (mai in BFU, mai in chiamata)
+# Lockjaw (physical_hardening) - service.sh
+# a) USB data + host/OTG disabled while the screen is locked, restored on unlock
+# b) reboot if the phone is not unlocked for N hours (never in BFU, never during a call)
 #
-# Rilevamento: eventi logcat (buffer events) usati SOLO come "sveglia";
-# lo stato reale viene sempre letto da `dumpsys trust` (deviceLocked, user 0).
+# Detection: logcat events (events buffer) are used ONLY as a wake-up trigger;
+# the real state is always read from `dumpsys trust` (deviceLocked, user 0).
 
 PATH=/system/bin:/system/xbin:$PATH
 MODDIR=${0%/*}
@@ -13,7 +13,7 @@ D=/data/adb/physical_hardening
 CFG=$D/config
 LOG=$D/log
 RUN=$D/run
-# primo controller gadget reale (esclude dummy_udc)
+# first real gadget controller (skips dummy_udc)
 UDC=""
 for u in /sys/class/udc/*; do case "$u" in *dummy*) continue ;; esac; UDC=$u; break; done
 AUTH=/sys/module/usbcore/parameters/authorized_default
@@ -21,7 +21,7 @@ AUTH=/sys/module/usbcore/parameters/authorized_default
 mkdir -p "$RUN"
 chmod 700 "$D"
 
-# ---------- log a rotazione (max ~64 KB, 1 file di storico) ----------
+# ---------- rotating log (max ~64 KB, 1 history file) ----------
 log() {
     if [ -f "$LOG" ] && [ "$(stat -c %s "$LOG" 2>/dev/null || echo 0)" -gt 65536 ]; then
         mv -f "$LOG" "$LOG.1"
@@ -29,7 +29,7 @@ log() {
     echo "$(date '+%Y-%m-%d %H:%M:%S') $*" >> "$LOG"
 }
 
-# ---------- descrizione dinamica (solo il module.prop di questo modulo) ----------
+# ---------- dynamic description (this module's own module.prop only) ----------
 set_desc() {
     [ -f "$PROP" ] || return
     grep -qxF "description=$*" "$PROP" && return
@@ -40,55 +40,55 @@ hm() { date -d "@$1" '+%d/%m %H:%M' 2>/dev/null; }
 
 update_desc() {
     if [ -f "$D/disable" ]; then
-        set_desc "🔴 DISATTIVATO - premi Azione per riattivare. USB e riavvio per inattivita' non protetti."
+        set_desc "🔴 DISABLED - press Action to enable. USB lockdown and inactivity reboot are off."
         return
     fi
     feat=""
     [ "$USB_LOCK" = 1 ] && feat="USB" || feat="USB off"
     [ "$USB_BLOCK_OTG" = 1 ] && feat="$feat+OTG"
     if [ "$INACTIVITY_REBOOT" = 1 ]; then
-        if [ "$INACTIVITY_TEST_MINUTES" -gt 0 ] 2>/dev/null; then r="riavvio ${INACTIVITY_TEST_MINUTES}min (TEST)"; else r="riavvio ${INACTIVITY_HOURS}h"; fi
+        if [ "$INACTIVITY_TEST_MINUTES" -gt 0 ] 2>/dev/null; then r="reboot ${INACTIVITY_TEST_MINUTES}min (TEST)"; else r="reboot ${INACTIVITY_HOURS}h"; fi
     else
-        r="riavvio off"
+        r="reboot off"
     fi
     last=$(cat "$RUN/last_unlock" 2>/dev/null)
     if [ -f "$RUN/usb_locked" ] || [ "$1" = locked ]; then
-        stato="🔒 bloccato"
-        [ "$USB_LOCK" = 1 ] && stato="$stato, USB dati OFF"
+        stato="🔒 locked"
+        [ "$USB_LOCK" = 1 ] && stato="$stato, USB data OFF"
         if [ "$INACTIVITY_REBOOT" = 1 ] && [ -n "$last" ]; then
-            stato="$stato, riavvio dal $(hm $((last + LIMIT)))"
+            stato="$stato, reboot after $(hm $((last + LIMIT)))"
         fi
     else
-        stato="🔓 sbloccato, USB normale"
+        stato="🔓 unlocked, USB normal"
     fi
-    [ "$(getprop sys.user.0.ce_available)" = "true" ] || stato="⏳ BFU (mai sbloccato dal boot)"
-    set_desc "🟢 ATTIVO [$feat, $r] $stato. Azione = disattiva."
+    [ "$(getprop sys.user.0.ce_available)" = "true" ] || stato="⏳ BFU (not unlocked since boot)"
+    set_desc "🟢 ACTIVE [$feat, $r] $stato. Action = disable."
 }
 
-# ---------- configurazione ----------
+# ---------- configuration ----------
 write_default_cfg() {
     cat > "$CFG" <<'EOF'
-# physical_hardening - configurazione (1=attivo, 0=disattivo)
-# Le modifiche vengono rilette ad ogni evento/controllo, senza riavvio.
+# Lockjaw (physical_hardening) - configuration (1=on, 0=off)
+# Changes are re-read on every event/check, no reboot needed.
 
-# a) Blocco USB a schermo bloccato
+# a) Charging-only USB while the screen is locked
 USB_LOCK=1
-# a) Host/OTG: i dispositivi USB collegati a schermo bloccato NON vengono autorizzati
-#    (nessun driver UVC/audio/HID/storage si aggancia). Effetto collaterale: accessori
-#    USB (cuffie USB-C con DAC, chiavette, tastiere) collegati a schermo bloccato non
-#    funzionano finche' non sblocchi e li ricolleghi. Quelli gia' collegati restano attivi.
+# a) Host/OTG: USB devices plugged in while locked are NOT authorized
+#    (no UVC/audio/HID/storage driver binds). Side effect: USB accessories
+#    (USB-C DAC headphones, flash drives, keyboards) plugged in while locked do not
+#    work until you unlock and replug them. Already connected ones keep working.
 USB_BLOCK_OTG=1
-# a) Stacca il gadget USB (pull-up D+) a schermo bloccato: il PC non vede il telefono
-#    neanche per ADB. La ricarica non e' influenzata.
+# a) Soft-disconnect the USB gadget (D+ pull-up) while locked: a PC does not see
+#    the phone at all, not even over ADB. Charging is not affected.
 USB_SOFT_DISCONNECT=1
 
-# b) Riavvio per inattivita'
+# b) Inactivity reboot
 INACTIVITY_REBOOT=1
 INACTIVITY_HOURS=18
-# Solo per test: se > 0 sostituisce INACTIVITY_HOURS (in minuti). Rimettere a 0.
+# Testing only: if > 0 it overrides INACTIVITY_HOURS (in minutes). Set back to 0.
 INACTIVITY_TEST_MINUTES=0
 
-# Intervallo del controllo periodico di riserva, in secondi di veglia (min 60)
+# Fallback periodic check interval, in seconds of awake time (min 60)
 CHECK_INTERVAL=300
 EOF
     chmod 600 "$CFG"
@@ -99,7 +99,7 @@ load_cfg() {
     INACTIVITY_REBOOT=1; INACTIVITY_HOURS=18; INACTIVITY_TEST_MINUTES=0
     CHECK_INTERVAL=300
     [ -f "$CFG" ] || write_default_cfg
-    # legge solo righe CHIAVE=numero (nessun codice eseguito dal file)
+    # only KEY=number lines are read (no code is executed from the file)
     eval "$(grep -E '^[A-Z_]+=[0-9]+[[:space:]]*$' "$CFG")"
     [ "$CHECK_INTERVAL" -lt 60 ] 2>/dev/null && CHECK_INTERVAL=60
     [ "$INACTIVITY_HOURS" -lt 1 ] 2>/dev/null && INACTIVITY_HOURS=1
@@ -110,8 +110,8 @@ load_cfg() {
     fi
 }
 
-# ---------- stato del dispositivo ----------
-# 0 = bloccato, 1 = sbloccato, 2 = sconosciuto (trattato come bloccato per l'USB)
+# ---------- device state ----------
+# 0 = locked, 1 = unlocked, 2 = unknown (treated as locked for USB)
 lock_state() {
     l=$(dumpsys trust 2>/dev/null | grep -E '\(id=0,' | grep -oE 'deviceLocked=[01]' | head -1)
     case "$l" in
@@ -133,7 +133,7 @@ usb_functions() {
     svc usb getFunctions 2>/dev/null | tail -n 1 | tr -d '\r'
 }
 
-# bus USB host reali (esclude il dummy_hcd interno)
+# real USB host buses (skips the internal dummy_hcd)
 host_buses() {
     for b in /sys/bus/usb/devices/usb*; do
         [ -e "$b/authorized_default" ] || continue
@@ -160,7 +160,7 @@ apply_lock() {
         touch "$RUN/udc_off"
     fi
     touch "$RUN/usb_locked"
-    log "LOCK usb: funzioni=charging otg_auth=$(cat "$AUTH" 2>/dev/null) udc=$([ -f "$RUN/udc_off" ] && echo off || echo on) (prima: $f)"
+    log "LOCK usb: functions=charging otg_auth=$(cat "$AUTH" 2>/dev/null) udc=$([ -f "$RUN/udc_off" ] && echo off || echo on) (before: $f)"
 }
 
 restore_usb() {
@@ -178,32 +178,32 @@ restore_usb() {
     f=$(cat "$RUN/usb_prev" 2>/dev/null)
     case "$f" in mtp|ptp|rndis|midi|ncm) svc usb setFunctions "$f" >/dev/null 2>&1 ;; esac
     rm -f "$RUN/usb_locked" "$RUN/usb_prev"
-    log "UNLOCK usb: ripristinato otg_auth=$(cat "$AUTH" 2>/dev/null) funzioni=${f:-charging}"
+    log "UNLOCK usb: restored otg_auth=$(cat "$AUTH" 2>/dev/null) functions=${f:-charging}"
 }
 
-# ---------- b) riavvio per inattivita' ----------
-# last_unlock = ultimo istante (orologio di sistema) in cui il telefono e' stato visto sbloccato
+# ---------- b) inactivity reboot ----------
+# last_unlock = last moment (system clock) the phone was seen unlocked
 mark_unlocked() { date +%s > "$RUN/last_unlock"; }
 
 check_inactivity() {
     [ "$INACTIVITY_REBOOT" = 1 ] || return
-    # mai in stato BFU (prima del primo sblocco): evita riavvii a catena
+    # never in BFU state (before first unlock): prevents reboot loops
     [ "$(getprop sys.user.0.ce_available)" = "true" ] || return
     now=$(date +%s)
     last=$(cat "$RUN/last_unlock" 2>/dev/null)
     case "$last" in ''|*[!0-9]*) mark_unlocked; return ;; esac
-    # orologio tornato indietro: riparte da ora
+    # clock went backwards: restart counting from now
     [ "$now" -lt "$last" ] && { mark_unlocked; return; }
     [ $((now - last)) -ge "$LIMIT" ] || return
-    # ricontrolla lo stato reale subito prima di agire
+    # re-check the real state right before acting
     lock_state; [ $? -eq 0 ] || return
-    # uptime minimo 10 minuti (protezione extra contro cicli)
+    # minimum uptime 10 minutes (extra protection against loops)
     up=$(cut -d. -f1 /proc/uptime); [ "$up" -ge 600 ] || return
     if in_call; then
-        log "INATTIVITA': soglia superata ma chiamata attiva, rinvio"
+        log "INACTIVITY: threshold reached but a call is active, postponing"
         return
     fi
-    log "INATTIVITA': nessuno sblocco da $(( (now - last) / 60 )) min (limite $((LIMIT / 60))), riavvio"
+    log "INACTIVITY: no unlock for $(( (now - last) / 60 )) min (limit $((LIMIT / 60))), rebooting"
     rm -f "$RUN/last_unlock"
     sync
     svc power reboot inactivity >/dev/null 2>&1
@@ -211,15 +211,15 @@ check_inactivity() {
     reboot
 }
 
-# ---------- riconciliazione (chiamata da eventi e timer) ----------
+# ---------- reconcile (called by events and timer) ----------
 reconcile() {
     if [ -f "$D/disable" ]; then
         restore_usb
         update_desc
-        log "kill switch presente: stop"
+        log "kill switch present: stopping"
         return 9
     fi
-    # evita esecuzioni concorrenti (eventi + timer)
+    # avoid concurrent runs (events + timer)
     mkdir "$RUN/lk" 2>/dev/null || return 0
     load_cfg
     lock_state; s=$?
@@ -237,7 +237,7 @@ reconcile() {
     return 0
 }
 
-# ---------- accensione / spegnimento (usato da action.sh) ----------
+# ---------- on / off (used by action.sh) ----------
 svc_running() { [ -f "$RUN/pid" ] && kill -0 "$(cat "$RUN/pid")" 2>/dev/null; }
 
 ctl_off() {
@@ -248,19 +248,19 @@ ctl_off() {
     rmdir "$RUN/lk" 2>/dev/null
     restore_usb
     update_desc
-    log "DISATTIVATO manualmente (Azione)"
+    log "DISABLED manually (Action)"
 }
 
 ctl_on() {
     rm -f "$D/disable"
     rmdir "$RUN/lk" 2>/dev/null
-    log "RIATTIVATO manualmente (Azione)"
+    log "ENABLED manually (Action)"
     setsid sh "$MODDIR/service.sh" </dev/null >/dev/null 2>&1 &
     i=0; while ! svc_running && [ $i -lt 10 ]; do sleep 1; i=$((i+1)); done
     svc_running
 }
 
-# ---------- modalita' test manuale (non avvia il servizio) ----------
+# ---------- control and manual test modes (do not start the service) ----------
 # sh service.sh test lock|unlock|status|inactivity
 case "$1" in
     on)  ctl_on; exit $? ;;
@@ -276,33 +276,33 @@ if [ "$1" = "test" ]; then
         inactivity) check_inactivity ;;
     esac
     lock_state; s=$?
-    echo "deviceLocked=$([ $s -eq 0 ] && echo 1 || echo 0) (codice $s) schermo=$(screen_on && echo on || echo off) chiamata=$(in_call && echo si || echo no)"
-    echo "ce_available=$(getprop sys.user.0.ce_available) funzioni_usb=$(usb_functions) authorized_default=$(cat "$AUTH")"
+    echo "deviceLocked=$([ $s -eq 0 ] && echo 1 || echo 0) (code $s) screen=$(screen_on && echo on || echo off) call=$(in_call && echo yes || echo no)"
+    echo "ce_available=$(getprop sys.user.0.ce_available) usb_functions=$(usb_functions) authorized_default=$(cat "$AUTH")"
     for b in $(host_buses); do echo "  $b authorized_default=$(cat "$b/authorized_default")"; done
-    echo "servizio=$(svc_running && echo attivo || echo fermo) disable=$([ -f "$D/disable" ] && echo si || echo no)"
-    echo "usb_locked=$([ -f "$RUN/usb_locked" ] && echo si || echo no) last_unlock=$(cat "$RUN/last_unlock" 2>/dev/null) ora=$(date +%s) limite_s=$LIMIT"
+    echo "service=$(svc_running && echo running || echo stopped) disable=$([ -f "$D/disable" ] && echo yes || echo no)"
+    echo "usb_locked=$([ -f "$RUN/usb_locked" ] && echo yes || echo no) last_unlock=$(cat "$RUN/last_unlock" 2>/dev/null) now=$(date +%s) limit_s=$LIMIT"
     exit 0
 fi
 
-# ---------- avvio ----------
+# ---------- startup ----------
 if [ -f "$D/disable" ]; then update_desc; exit 0; fi
-set_desc "⏳ In avvio: attendo sys.boot_completed..."
+set_desc "⏳ Starting: waiting for sys.boot_completed..."
 until [ "$(getprop sys.boot_completed)" = "1" ]; do sleep 5; done
 if [ -f "$D/disable" ]; then update_desc; exit 0; fi
 
-# istanza singola
+# single instance
 if [ -f "$RUN/pid" ] && kill -0 "$(cat "$RUN/pid")" 2>/dev/null; then exit 0; fi
 echo $$ > "$RUN/pid"
 
-# stato runtime del boot precedente non piu' valido (il kernel riparte con i default)
+# runtime state from the previous boot is stale (the kernel starts with defaults)
 rm -f "$RUN/usb_locked" "$RUN/usb_prev" "$RUN/auth_prev" "$RUN/udc_off" "$RUN/last_unlock"
 rmdir "$RUN/lk" 2>/dev/null
 load_cfg
-log "avvio v1.0 (BFU=$([ "$(getprop sys.user.0.ce_available)" = true ] && echo no || echo si))"
+log "start v1.0 (BFU=$([ "$(getprop sys.user.0.ce_available)" = true ] && echo no || echo yes))"
 reconcile
 
-# timer di riserva (secondi di veglia; in deep sleep si ferma ma
-# ogni risveglio - cavo, tasto, notifica - genera comunque un evento)
+# fallback timer (awake seconds; it pauses in deep sleep, but every
+# wake-up - cable, power key, notification - still generates an event)
 (
     while :; do
         sleep "$CHECK_INTERVAL"
@@ -314,8 +314,8 @@ reconcile
 ) &
 TIMER=$!
 
-# ciclo a eventi: si sveglia solo su accensione/spegnimento schermo e keyguard.
-# Se logcat termina (es. riavvio di logd) viene rilanciato.
+# event loop: wakes only on screen on/off and keyguard changes.
+# If logcat exits (e.g. logd restart) it is restarted.
 FIFO=$RUN/events
 while [ ! -f "$D/disable" ]; do
     rm -f "$FIFO"; mkfifo -m 600 "$FIFO"
@@ -326,7 +326,7 @@ while [ ! -f "$D/disable" ]; do
             *wm_set_keyguard_shown*|*screen_toggled*)
                 sleep 1
                 reconcile || { kill "$(cat "$RUN/logcat_pid")" 2>/dev/null; break; }
-                # keyguard nascosto ma stato ancora "bloccato": ricontrolla dopo 2 s
+                # keyguard hidden but state still "locked": re-check after 2 s
                 case "$line" in
                     *wm_set_keyguard_shown*\[0,0,*)
                         if [ -f "$RUN/usb_locked" ]; then sleep 2; reconcile; fi ;;
@@ -334,7 +334,7 @@ while [ ! -f "$D/disable" ]; do
                 ;;
         esac
     done < "$FIFO"
-    [ -f "$D/disable" ] || { log "logcat terminato, riavvio ascolto"; sleep 10; }
+    [ -f "$D/disable" ] || { log "logcat exited, restarting listener"; sleep 10; }
 done
 
 kill "$TIMER" 2>/dev/null

@@ -1,18 +1,18 @@
 #!/system/bin/sh
-# physical_hardening - action.sh (tasto "Azione" in Magisk): attiva/disattiva il modulo
+# Lockjaw (physical_hardening) - action.sh (Magisk/KernelSU "Action" button): enable/disable the module
 MODDIR=${0%/*}
 D=/data/adb/physical_hardening
 if [ -f "$D/disable" ]; then
-    echo "- Stato: DISATTIVATO -> riattivo..."
+    echo "- State: DISABLED -> enabling..."
     if sh "$MODDIR/service.sh" on; then
-        echo "- Modulo ATTIVO: USB bloccata a schermo bloccato, riavvio per inattivita' abilitato."
+        echo "- Module ACTIVE: USB locked down while the screen is locked, inactivity reboot enabled."
     else
-        echo "! Avvio non confermato: controlla $D/log"
+        echo "! Start not confirmed: check $D/log"
     fi
 else
-    echo "- Stato: ATTIVO -> disattivo..."
+    echo "- State: ACTIVE -> disabling..."
     sh "$MODDIR/service.sh" off
-    echo "- Modulo DISATTIVATO: USB ripristinata, nessun riavvio automatico."
-    echo "  Resta disattivato anche dopo il riavvio finche' non premi di nuovo Azione."
+    echo "- Module DISABLED: USB restored, no automatic reboot."
+    echo "  It stays disabled across reboots until you press Action again."
 fi
 sed -n 's/^description=/- /p' "$MODDIR/module.prop"

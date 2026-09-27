@@ -3,4 +3,4 @@ name=Lockjaw - anti-forensic USB lockdown (Magisk/KernelSU)
 version=v1.0-beta
 versionCode=1
 author=scozzadroid-cpu
-description=⏳ Installato: si attiva al prossimo avvio.
+description=⏳ Installed: activates on next boot.
