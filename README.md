@@ -6,7 +6,8 @@ Cellebrite / GrayKey, malicious USB devices, ADB).
 
 - 🔌 **USB lockdown while locked** — charging only, gadget soft-disconnected, OTG devices not authorized
 - 🔁 **Inactivity reboot** — reboots to BFU after N hours without an unlock
-- 🎛️ **Action button** — one tap to enable / disable, with a live status in the module description
+- 🎛️ **Armed on demand** — installed disarmed; one tap on Action arms it (e.g. before a border
+  crossing or a protest), another tap disarms it. Live status in the module description
 - 🔋 **Battery friendly** — event driven, no wakelocks, no tight polling
 
 > ⚠️ **Status: beta.** Lock/unlock detection is verified on a real device; USB cable tests
@@ -54,10 +55,11 @@ an accessory plugged in while locked works only after you unlock and replug it.
 - `INACTIVITY_TEST_MINUTES` is for testing only (set it back to 0).
 
 ## Action button and live description
-- The **Action** button (Magisk 28+ / KernelSU) enables or disables the module. The disabled
-  state persists across reboots.
+- The module is installed **disarmed**: nothing is locked down and nothing reboots.
+- The **Action** button (Magisk 28+ / KernelSU) arms or disarms it. The state persists across
+  reboots, including the inactivity reboot: an armed phone comes back armed (and in BFU).
 - The module description shows the current state, for example:
-  `🟢 ACTIVE [USB+OTG, reboot 18h] 🔒 locked, USB data OFF, reboot after 28/09 19:40`
+  `🟢 ARMED [USB+OTG+ADB, reboot 18h] 🔒 locked, USB data OFF, reboot after 28/09 19:40`
 
 ## How it works
 - Lock/unlock is detected through **events** (`logcat -b events`: `screen_toggled`,
@@ -90,14 +92,26 @@ INACTIVITY_TEST_MINUTES=0
 WAKE_ALARM=1             # RTC alarm so the reboot happens on time in deep sleep
 CHECK_INTERVAL=300
 ```
-Changes are picked up on the next event, no reboot needed (`WAKE_ALARM`: press Action twice).
+Changes are picked up on the next event, no reboot needed (`WAKE_ALARM` and the escape hatch:
+press Action twice).
+
+### Escape hatch (broken screen)
+`ESCAPE_PRESSES` / `ESCAPE_SECONDS` (off by default): pressing the power key that many times
+within that many seconds disarms the module and vibrates, so USB and ADB come back (for example to
+control the phone with scrcpy from an already authorized PC). Pick your own values on the device
+(10-60 presses, 2-30 seconds); they live only in your local config, not in this repository.
+Only the power key input device is read, never the touchscreen.
+
+> ⚠️ Turn off **Emergency SOS** first (Settings → Safety & emergency → Emergency SOS, or the
+> Personal Safety app on Pixel): from Android 12 five quick power presses start an emergency call.
 Configs from older versions get the new keys appended automatically. Set `USB_BLOCK_OTG=0` if you use
 USB-C headphones or other accessories plugged in while the phone is locked.
 
 ## Disabling and troubleshooting
 | Method | How |
 |---|---|
-| Action button | Magisk/KernelSU → module → Action |
+| Action button | Magisk/KernelSU → module → Action (disarm) |
+| Escape hatch | power key sequence configured in `ESCAPE_PRESSES` / `ESCAPE_SECONDS` |
 | Kill switch | `touch /data/adb/physical_hardening/disable` (on the next event the service stops and restores USB) |
 | Safe mode | Boot into safe mode → Magisk disables all modules on the next boot |
 | ADB (if authorized) | `adb shell su -c magisk --remove-modules` |

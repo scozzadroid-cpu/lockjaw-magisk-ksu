@@ -44,7 +44,7 @@ hm() { date -d "@$1" '+%d/%m %H:%M' 2>/dev/null; }
 
 update_desc() {
     if [ -f "$D/disable" ]; then
-        set_desc "🔴 DISABLED - press Action to enable. USB lockdown and inactivity reboot are off."
+        set_desc "⚪ DISARMED - press Action to arm. USB lockdown and inactivity reboot are off."
         return
     fi
     feat=""
@@ -67,7 +67,8 @@ update_desc() {
         stato="🔓 unlocked, USB normal"
     fi
     [ "$(getprop sys.user.0.ce_available)" = "true" ] || stato="⏳ BFU (not unlocked since boot)"
-    set_desc "🟢 ACTIVE [$feat, $r] $stato. Action = disable."
+    [ "$ESCAPE_PRESSES" -gt 0 ] 2>/dev/null && r="$r, escape on"
+    set_desc "🟢 ARMED [$feat, $r] $stato. Action = disarm."
 }
 
 # ---------- configuration ----------
@@ -101,6 +102,13 @@ WAKE_ALARM=1
 
 # Fallback periodic check interval, in seconds of awake time (min 60)
 CHECK_INTERVAL=300
+
+# Escape hatch (e.g. broken screen): pressing the power key ESCAPE_PRESSES times
+# within ESCAPE_SECONDS seconds disarms the module. 0 = off. Choose your own values
+# (presses 10-60, seconds 2-30) and keep them to yourself.
+# Turn off Emergency SOS first: 5 quick presses would start an emergency call.
+ESCAPE_PRESSES=0
+ESCAPE_SECONDS=0
 EOF
     chmod 600 "$CFG"
 }
@@ -108,15 +116,21 @@ EOF
 load_cfg() {
     USB_LOCK=1; USB_BLOCK_OTG=1; USB_SOFT_DISCONNECT=1; ADB_LOCK=1
     INACTIVITY_REBOOT=1; INACTIVITY_HOURS=18; INACTIVITY_TEST_MINUTES=0; WAKE_ALARM=1
-    CHECK_INTERVAL=300
+    CHECK_INTERVAL=300; ESCAPE_PRESSES=0; ESCAPE_SECONDS=0
     [ -f "$CFG" ] || write_default_cfg
     # configs created by older versions: add the new keys with their defaults
     grep -q '^ADB_LOCK=' "$CFG" || printf '\n# a) Turn off ADB (USB and wireless debugging) while locked, restored on unlock\nADB_LOCK=1\n' >> "$CFG"
     grep -q '^WAKE_ALARM=' "$CFG" || printf '\n# b) RTC alarm so the inactivity deadline is honored in deep sleep\nWAKE_ALARM=1\n' >> "$CFG"
+    grep -q '^ESCAPE_PRESSES=' "$CFG" || printf '\n# Escape hatch: power key pressed ESCAPE_PRESSES times within ESCAPE_SECONDS disarms (0 = off)\n# Turn off Emergency SOS first: 5 quick presses would start an emergency call.\nESCAPE_PRESSES=0\nESCAPE_SECONDS=0\n' >> "$CFG"
     # only KEY=number lines are read (no code is executed from the file)
     eval "$(grep -E '^[A-Z_]+=[0-9]+[[:space:]]*$' "$CFG")"
     [ "$CHECK_INTERVAL" -lt 60 ] 2>/dev/null && CHECK_INTERVAL=60
     [ "$INACTIVITY_HOURS" -lt 1 ] 2>/dev/null && INACTIVITY_HOURS=1
+    # out-of-range escape values switch it off (too few presses would fire by accident)
+    if [ "$ESCAPE_PRESSES" -lt 10 ] || [ "$ESCAPE_PRESSES" -gt 60 ] || \
+       [ "$ESCAPE_SECONDS" -lt 2 ] || [ "$ESCAPE_SECONDS" -gt 30 ]; then
+        ESCAPE_PRESSES=0
+    fi 2>/dev/null
     if [ "$INACTIVITY_TEST_MINUTES" -gt 0 ] 2>/dev/null; then
         LIMIT=$((INACTIVITY_TEST_MINUTES * 60))
     else
@@ -358,6 +372,8 @@ stop_listeners() {
     for p in logcat_pid dmesg_pid; do
         kill "$(cat "$RUN/$p" 2>/dev/null)" 2>/dev/null
     done
+    # shellcheck disable=SC2046
+    kill $(cat "$RUN/getevent_pids" 2>/dev/null) 2>/dev/null
 }
 
 ctl_off() {
@@ -370,23 +386,73 @@ ctl_off() {
     restore_usb
     rm -f "$RUN/deadline"; arm_wake
     update_desc
-    log "DISABLED manually (Action)"
+    log "DISARMED (${1:-Action})"
 }
 
 ctl_on() {
     rm -f "$D/disable"
     rmdir "$RUN/lk" 2>/dev/null
-    log "ENABLED manually (Action)"
+    log "ARMED (Action)"
     setsid sh "$MODDIR/service.sh" </dev/null >/dev/null 2>&1 &
     i=0; while ! svc_running && [ $i -lt 10 ]; do sleep 1; i=$((i+1)); done
     svc_running
+}
+
+# ---------- escape hatch: power key pressed N times within T seconds ----------
+# input devices that report KEY_POWER (the touchscreen is never read)
+power_devices() {
+    dev=""
+    getevent -pl 2>/dev/null | while read -r line; do
+        case "$line" in
+            "add device"*) dev=${line##* } ;;
+            *KEY_POWER*) [ -n "$dev" ] && echo "$dev"; dev="" ;;
+        esac
+    done
+}
+
+vibrate() {
+    cmd vibrator_manager synced -f -d lockjaw oneshot "$1" >/dev/null 2>&1 || \
+        cmd vibrator vibrate -f "$1" lockjaw >/dev/null 2>&1
+}
+
+escape_watcher() {
+    devs=$(power_devices)
+    if [ -z "$devs" ]; then log "escape: no power key input device found"; return; fi
+    EFIFO=$RUN/keys
+    rm -f "$EFIFO"; mkfifo -m 600 "$EFIFO"
+    : > "$RUN/getevent_pids"
+    for e in $devs; do
+        getevent -lt "$e" > "$EFIFO" 2>/dev/null &
+        echo $! >> "$RUN/getevent_pids"
+    done
+    win=$((ESCAPE_SECONDS * 1000)); q=""
+    while read -r line; do
+        case "$line" in *KEY_POWER*DOWN*) ;; *) continue ;; esac
+        # "[   12345.678901] ..." -> milliseconds of uptime
+        t=${line#*[}; t=${t%%]*}; t=${t##* }
+        f=${t#*.}000; f=${f%"${f#???}"}
+        # the leading 1 avoids octal parsing of fractions like 089
+        ms=$(( ${t%.*} * 1000 + 1$f - 1000 ))
+        nq=""; n=0
+        for x in $q $ms; do
+            [ $((ms - x)) -le $win ] && { nq="$nq $x"; n=$((n+1)); }
+        done
+        q=$nq
+        if [ $n -ge "$ESCAPE_PRESSES" ]; then
+            log "escape: power key sequence recognized"
+            vibrate 600
+            setsid sh "$MODDIR/service.sh" off escape </dev/null >/dev/null 2>&1 &
+            break
+        fi
+    done < "$EFIFO"
+    rm -f "$EFIFO"
 }
 
 # ---------- control and manual test modes (do not start the service) ----------
 # sh service.sh test lock|unlock|status|inactivity
 case "$1" in
     on)  ctl_on; exit $? ;;
-    off) ctl_off; exit 0 ;;
+    off) ctl_off "$2"; exit 0 ;;
     toggle) if [ -f "$D/disable" ]; then ctl_on; exit $?; else ctl_off; exit 0; fi ;;
 esac
 
@@ -483,6 +549,12 @@ if [ "$INACTIVITY_REBOOT" = 1 ] && [ "$WAKE_ALARM" = 1 ]; then
     WATCHER=$!
 fi
 
+ESCAPE=""
+if [ "$ESCAPE_PRESSES" -gt 0 ] 2>/dev/null; then
+    escape_watcher &
+    ESCAPE=$!
+fi
+
 # event loop: wakes only on screen on/off, keyguard changes and charger plug/unplug
 # (battery_status). If logcat exits (e.g. logd restart) it is restarted.
 FIFO=$RUN/events
@@ -509,6 +581,6 @@ while [ ! -f "$D/disable" ]; do
     [ -f "$D/disable" ] || { log "logcat exited, restarting listener"; sleep 10; }
 done
 
-kill "$TIMER" $WATCHER 2>/dev/null
+kill "$TIMER" $WATCHER $ESCAPE 2>/dev/null
 stop_listeners
-rm -f "$RUN/pid" "$RUN/logcat_pid" "$RUN/dmesg_pid" "$FIFO" "$RUN/kmsg"
+rm -f "$RUN/pid" "$RUN/logcat_pid" "$RUN/dmesg_pid" "$RUN/getevent_pids" "$FIFO" "$RUN/kmsg" "$RUN/keys"
