@@ -3,6 +3,7 @@
 ui_print "- Lockjaw: anti-forensic USB lockdown"
 [ -d /sys/class/udc ] || ui_print "! /sys/class/udc missing: USB data lockdown will not be available"
 [ -w /sys/module/usbcore/parameters/authorized_default ] || ui_print "! usbcore.authorized_default not writable: OTG blocking will not be available"
+ls /sys/class/rtc/rtc*/wakealarm >/dev/null 2>&1 || ui_print "! no RTC wakealarm: the inactivity reboot may be late while the phone is in deep sleep"
 if [ -f /data/adb/physical_hardening/config ]; then
   ui_print "- Existing configuration kept: /data/adb/physical_hardening/config"
 else
